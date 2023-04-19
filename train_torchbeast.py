@@ -814,7 +814,7 @@ class NetHackNet(nn.Module):
         #### Our GNN
         self.TileGraphBatch = TileGraphBatch()
         gnn_out_dim = 16 # HARDCODED
-        self.gnn = GNN(num_features=nethack.MAX_GLYPH,out_dim=gnn_out_dim)
+        self.gnn = GNN(num_features=nethack.MAX_GLYPH+1,out_dim=gnn_out_dim)
 
 
 
@@ -858,6 +858,7 @@ class NetHackNet(nn.Module):
         return out.reshape(x.shape + (-1,))
 
     def forward(self, env_outputs, core_state):
+        # print("--------- forward -----------")
         #### Get the 
         # -- [T x B x H x W]
         glyphs = env_outputs["glyphs"]
@@ -940,9 +941,12 @@ class NetHackNet(nn.Module):
         #### Our GNN
         self.TileGraphBatch.update(glyphs)
         pygData = self.TileGraphBatch.pyg()
-        print("pygData",pygData)
         gnn_out = self.gnn(x=pygData.x, edge_list=pygData.edge_index, batch=pygData.batch)
+        
+        # -- [B x gnn_out_dim]
         reps.append(gnn_out)
+        
+        # print("shapes",[x.shape for x in reps])
 
 
         #### Orange MLP

@@ -19,7 +19,6 @@ class GNN(torch.nn.Module):
         Layer = globals()[layer_type]
 
         self.conv1 = Layer(num_features, hid_dim)
-
         self.middle_layers = []
         for i in range(num_layers - 1):
             self.middle_layers.append(Layer(hid_dim, hid_dim))
@@ -36,9 +35,9 @@ class GNN(torch.nn.Module):
             edge_list: a Tensor of shape [2, num_edges], each column is a tuple contains a pair `(sender, receiver)`. Here `sender` and `receiver`
             batch: the indicator vector indicating different graphs    
         """
-        print("x",x.shape)
-        print("edge_list",edge_list.shape)
-        print("batch",batch.shape)
+        # print("x",x.shape)
+        # print("edge_list",edge_list.shape)
+        # print("batch",batch.shape)
         out = self.conv1(x, edge_list)
         out = F.relu(out)
         for hidden in self.middle_layers:

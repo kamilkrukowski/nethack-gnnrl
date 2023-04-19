@@ -45,15 +45,14 @@ class TileGraph(WorldGraph):
         # print("glyphs",glyphs.shape,glyphs)
         self._edge_index = [] # reset the edge index
         self._nodes = [] # # reset the nodes
-        node_ids = np.zeros_like(glyphs)  # track locations of node ids
+        node_ids = np.full_like(glyphs, -1)  # track locations of node ids
         # double for loop over the glyphys to make a graph representation
         for i in range(glyphs.shape[0]):  # loop over the rows
             for j in range(glyphs.shape[1]):  # loop over the columns
-                value = glyphs[i, j]  # get the value at that coordinate
-                # print("value",value)
+                value = glyphs[i, j] # get the value at that coordinate
                 if value != 2359:  # ignore empty spaces
                     # assign this node a new id
-                    this_node_id = len(self._nodes) + 1
+                    this_node_id = len(self._nodes)
                     # set the node id in its position in node_ids
                     node_ids[i, j] = this_node_id
                     # add this character to the list of nodes
@@ -64,7 +63,7 @@ class TileGraph(WorldGraph):
 
     @property
     def edge_index(self):
-        return torch.tensor(self._edge_index)
+        return torch.transpose(torch.tensor(self._edge_index), 0, 1)
 
     @property
     def nodes(self):
@@ -72,7 +71,7 @@ class TileGraph(WorldGraph):
         nodes = np.array(self._nodes)
         one_hot_nodes = np.zeros((nodes.size, nethack.MAX_GLYPH + 1))
         one_hot_nodes[np.arange(nodes.size), nodes] = 1
-        return torch.tensor(one_hot_nodes)
+        return torch.tensor(one_hot_nodes, dtype=torch.float32)
 
     # look in the west, northwest, north, and north east directions to see if
     # we should add new edges to previously seen nodes
@@ -110,8 +109,7 @@ class TileGraphBatch():
         self.TileGraphs = []
 
     def update(self, glyphs_batch):
-        print("glyphs_batch",glyphs_batch.shape)
-
+        self.TileGraphs = []
         for b_index in range(glyphs_batch.shape[0]):
             TestGraph = TileGraph()
             TestGraph.update(glyphs_batch[b_index])
