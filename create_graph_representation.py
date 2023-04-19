@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod, abstractproperty
 
 import gym  # type: ignore
 import nle  # type: ignore
+from nle import nethack  # type: ignore
 import numpy as np  # type: ignore
 from torch_geometric.data import Data  # type: ignore
 
@@ -41,7 +42,8 @@ class TileGraph(WorldGraph):
 
     def update(self, obs):
         glyphs = obs['glyphs']
-        self._nodes = []
+        self._edge_index = [] # reset the edge index
+        self._nodes = [] # # reset the nodes
         node_ids = np.zeros_like(glyphs)  # track locations of node ids
         # double for loop over the glyphys to make a graph representation
         for i in range(glyphs.shape[0]):  # loop over the rows
@@ -66,7 +68,7 @@ class TileGraph(WorldGraph):
     def nodes(self):
         # ints to one hot encoding https://stackoverflow.com/a/29831596
         nodes = np.array(self._nodes)
-        one_hot_nodes = np.zeros((nodes.size, nodes.max() + 1))
+        one_hot_nodes = np.zeros((nodes.size, nethack.MAX_GLYPH + 1))
         one_hot_nodes[np.arange(nodes.size), nodes] = 1
         return one_hot_nodes
 
