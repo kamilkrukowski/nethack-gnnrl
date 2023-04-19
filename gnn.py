@@ -36,6 +36,9 @@ class GNN(torch.nn.Module):
             edge_list: a Tensor of shape [2, num_edges], each column is a tuple contains a pair `(sender, receiver)`. Here `sender` and `receiver`
             batch: the indicator vector indicating different graphs    
         """
+        print("x",x.shape)
+        print("edge_list",edge_list.shape)
+        print("batch",batch.shape)
         out = self.conv1(x, edge_list)
         out = F.relu(out)
         for hidden in self.middle_layers:

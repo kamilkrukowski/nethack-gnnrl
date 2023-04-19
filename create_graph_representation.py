@@ -4,7 +4,8 @@ import gym  # type: ignore
 import nle  # type: ignore
 from nle import nethack  # type: ignore
 import numpy as np  # type: ignore
-from torch_geometric.data import Data  # type: ignore
+from torch_geometric.data import Data, Batch  # type: ignore
+import torch
 
 
 class WorldGraph(ABC):
@@ -40,8 +41,8 @@ class TileGraph(WorldGraph):
         self._edge_index = []
         self._nodes = []
 
-    def update(self, obs):
-        glyphs = obs['glyphs']
+    def update(self, glyphs):
+        # print("glyphs",glyphs.shape,glyphs)
         self._edge_index = [] # reset the edge index
         self._nodes = [] # # reset the nodes
         node_ids = np.zeros_like(glyphs)  # track locations of node ids
@@ -49,6 +50,7 @@ class TileGraph(WorldGraph):
         for i in range(glyphs.shape[0]):  # loop over the rows
             for j in range(glyphs.shape[1]):  # loop over the columns
                 value = glyphs[i, j]  # get the value at that coordinate
+                # print("value",value)
                 if value != 2359:  # ignore empty spaces
                     # assign this node a new id
                     this_node_id = len(self._nodes) + 1
@@ -62,7 +64,7 @@ class TileGraph(WorldGraph):
 
     @property
     def edge_index(self):
-        return np.array(self._edge_index)
+        return torch.tensor(self._edge_index)
 
     @property
     def nodes(self):
@@ -70,7 +72,7 @@ class TileGraph(WorldGraph):
         nodes = np.array(self._nodes)
         one_hot_nodes = np.zeros((nodes.size, nethack.MAX_GLYPH + 1))
         one_hot_nodes[np.arange(nodes.size), nodes] = 1
-        return one_hot_nodes
+        return torch.tensor(one_hot_nodes)
 
     # look in the west, northwest, north, and north east directions to see if
     # we should add new edges to previously seen nodes
@@ -96,6 +98,33 @@ class TileGraph(WorldGraph):
                 # append the new edge
                 self._edge_index.append([this_node_id, neighbor_node_id])
 
+
+class TileGraphBatch():
+    """
+    GNN Representation treating each tile as vertex, \
+        with connections to 8 neighbors.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.TileGraphs = []
+
+    def update(self, glyphs_batch):
+        print("glyphs_batch",glyphs_batch.shape)
+
+        for b_index in range(glyphs_batch.shape[0]):
+            TestGraph = TileGraph()
+            TestGraph.update(glyphs_batch[b_index])
+            self.TileGraphs.append(TestGraph)
+        
+    def pyg(self):
+        return Batch().from_data_list([
+            tg.pyg() for tg in self.TileGraphs
+        ])
+
+
+
+
 if __name__ == '__main__':
 
     # Set up Environment
@@ -105,9 +134,10 @@ if __name__ == '__main__':
     # print("obs.keys()",obs.keys())
     env.render()
 
-    TestGraph = TileGraph()
 
-    TestGraph.update(obs)
+    glyphs_batch = obs["glyphs"][None, :, :] # add a new batch dimension in front
+    TestGraph = TileGraph()
+    TestGraph.update(glyphs_batch)
     pygData = TestGraph.pyg()
 
     nodes, edge_index = pygData.x, pygData.edge_index

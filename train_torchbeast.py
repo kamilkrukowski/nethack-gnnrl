@@ -23,6 +23,9 @@ import time
 import timeit
 import traceback
 
+from gnn import GNN
+from create_graph_representation import TileGraphBatch
+
 # Necessary for multithreading.
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -737,8 +740,8 @@ class NetHackNet(nn.Module):
         self.H = self.glyph_shape[0]
         self.W = self.glyph_shape[1]
 
-        self.k_dim = embedding_dim
-        self.h_dim = 512
+        self.k_dim = embedding_dim # the output dimension of the green blstats MLP and embedding dimension used by the CNNs
+        self.h_dim = 512 # the hidden dimension of the LSTM
 
         self.crop_dim = crop_dim
 
@@ -760,6 +763,9 @@ class NetHackNet(nn.Module):
         def interleave(xs, ys):
             return [val for pair in zip(xs, ys) for val in pair]
 
+
+
+        #### Red CNN over full glyph map model
         conv_extract = [
             nn.Conv2d(
                 in_channels=in_channels[i],
@@ -775,7 +781,9 @@ class NetHackNet(nn.Module):
             *interleave(conv_extract, [nn.ELU()] * len(conv_extract))
         )
 
-        # CNN crop model.
+
+
+        #### Blue CNN crop model
         conv_extract_crop = [
             nn.Conv2d(
                 in_channels=in_channels[i],
@@ -791,19 +799,30 @@ class NetHackNet(nn.Module):
             *interleave(conv_extract_crop, [nn.ELU()] * len(conv_extract))
         )
 
-        out_dim = self.k_dim
-        # CNN over full glyph map
-        out_dim += self.H * self.W * Y
 
-        # CNN crop model.
-        out_dim += self.crop_dim**2 * Y
 
+        #### Green blstats MLP
         self.embed_blstats = nn.Sequential(
             nn.Linear(self.blstats_size, self.k_dim),
             nn.ReLU(),
             nn.Linear(self.k_dim, self.k_dim),
             nn.ReLU(),
         )
+
+
+
+        #### Our GNN
+        self.TileGraphBatch = TileGraphBatch()
+        gnn_out_dim = 16 # HARDCODED
+        self.gnn = GNN(num_features=nethack.MAX_GLYPH,out_dim=gnn_out_dim)
+
+
+
+        #### Orange MLP that takes output from (the blue crop CNN, red full glyph map CNN, green blstats MLP, and our GNN) and feeds it to the LSTM or directly to the policy and baseline
+        out_dim = self.k_dim # blstats MLP
+        out_dim += self.H * self.W * Y # CNN over full glyph map
+        out_dim += self.crop_dim**2 * Y # CNN crop model
+        out_dim += gnn_out_dim # our GNN
 
         self.fc = nn.Sequential(
             nn.Linear(out_dim, self.h_dim),
@@ -812,13 +831,19 @@ class NetHackNet(nn.Module):
             nn.ReLU(),
         )
 
+
+
+        #### LSTM
         if self.use_lstm:
             self.core = nn.LSTM(self.h_dim, self.h_dim, num_layers=1)
 
-        self.policy = nn.Linear(self.h_dim, self.num_actions)
-        self.baseline = nn.Linear(self.h_dim, 1)
 
-    def initial_state(self, batch_size=1):
+
+        #### Policy and baseline outputs
+        self.policy = nn.Linear(self.h_dim, self.num_actions)
+        self.baseline = nn.Linear(self.h_dim, 1) # Harry: tbh I'm not really sure what the baseline is used for
+
+    def initial_state(self, batch_size=1): # initial state of the LSTM or empty tuple
         if not self.use_lstm:
             return tuple()
         return tuple(
@@ -833,6 +858,7 @@ class NetHackNet(nn.Module):
         return out.reshape(x.shape + (-1,))
 
     def forward(self, env_outputs, core_state):
+        #### Get the 
         # -- [T x B x H x W]
         glyphs = env_outputs["glyphs"]
 
@@ -844,6 +870,9 @@ class NetHackNet(nn.Module):
         # -- [B' x H x W]
         glyphs = torch.flatten(glyphs, 0, 1)  # Merge time and batch.
 
+
+
+        #### Green blstats MLP
         # -- [B' x F]
         blstats = blstats.view(T * B, -1).float()
 
@@ -863,6 +892,9 @@ class NetHackNet(nn.Module):
 
         reps = [blstats_emb]
 
+
+
+        #### Blue crop CNN
         # -- [B x H' x W']
         crop = self.crop(glyphs, coordinates)
 
@@ -884,6 +916,9 @@ class NetHackNet(nn.Module):
 
         reps.append(crop_rep)
 
+
+
+        #### Red CNN over all glyphs
         # -- [B x H x W x K]
         glyphs_emb = self._select(self.embed, glyphs)
         # glyphs_emb = self.embed(glyphs)
@@ -900,11 +935,25 @@ class NetHackNet(nn.Module):
         # -- [B x K'']
         reps.append(glyphs_rep)
 
+
+
+        #### Our GNN
+        self.TileGraphBatch.update(glyphs)
+        pygData = self.TileGraphBatch.pyg()
+        print("pygData",pygData)
+        gnn_out = self.gnn(x=pygData.x, edge_list=pygData.edge_index, batch=pygData.batch)
+        reps.append(gnn_out)
+
+
+        #### Orange MLP
         st = torch.cat(reps, dim=1)
 
         # -- [B x K]
         st = self.fc(st)
 
+
+
+        #### LSTM
         if self.use_lstm:
             core_input = st.view(T, B, -1)
             core_output_list = []
