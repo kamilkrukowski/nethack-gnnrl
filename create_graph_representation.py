@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod, abstractproperty
 import gym  # type: ignore
 import nle  # type: ignore
 import numpy as np  # type: ignore
-from torch_geometric.data import Data  # type: ignore
+from torch_geometric.data import Data, Batch # type: ignore
 
 
 class WorldGraph(ABC):
