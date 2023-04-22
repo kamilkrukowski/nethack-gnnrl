@@ -1,49 +1,51 @@
 import torch
 import torch.nn.functional as F
-from torch.nn import Linear
-from torch_geometric.nn import SAGEConv, GCNConv, global_mean_pool
+import numpy as np
+from torch_geometric.nn import GCNConv, global_mean_pool, Sequential
+from torch.nn import Linear, ReLU, Dropout, Embedding
 
 
 class GNN(torch.nn.Module):
-    def __init__(self, num_features, 
-            out_dim, 
-            hid_dim=64, 
-            num_layers=30, layer_type='GCNConv'): 
+
+    def __init__(self, in_dim, out_dim, hid_dim=16,
+                 num_layers=15, layer_type='GCNConv'):
         """
-        Initialize a GNN model for graph classification. 
-        args: 
+        Initialize a GNN model for graph classification.
+        args:
         """
+        super().__init__()
 
-        super(GNN, self).__init__()
+        GCNLayer = globals()[layer_type]
 
-        Layer = globals()[layer_type]
+        # Maximum number of glyphs in simulation + 1 hardcoded is 5977
+        _layers = [
+            (Embedding(in_dim, hid_dim), 'x -> x'),
+            (Dropout(p=0.5), 'x -> x'),
+            (GCNLayer(hid_dim, hid_dim), 'x, edge_index -> x1')
+        ]
 
-        self.conv1 = Layer(num_features, hid_dim)
-        self.middle_layers = []
-        for i in range(num_layers - 1):
-            self.middle_layers.append(Layer(hid_dim, hid_dim))
-        self.pool = global_mean_pool
-        self.lin = Linear(hid_dim, out_dim)
-        
+        for _ in range(num_layers - 1):
+            _layers.append(ReLU(inplace=True))
+            _layers.append((Dropout(p=0.5), 'x1 -> x1'))
+            _layers.append(
+                (GCNLayer(hid_dim, hid_dim), 'x1, edge_index -> x1'))
 
-    def forward(self, x, edge_list, batch):
+        _layers = _layers + [
+            (global_mean_pool, 'x1, batch -> x2'),
+            Linear(hid_dim, out_dim)
+        ]
+
+        self.layers = Sequential('x, edge_index, batch', _layers)
+
+    def forward(self, x, edge_index, batch):
         """
-        Implement the GNN calculation. The output should be logits for graph labels in the batch.    
+        Implement the GNN calculation. The output should be logits for graph labels in the batch.
 
-        args: 
+        args:
             x: a Tensor of shape [n, num_features], node features
-            edge_list: a Tensor of shape [2, num_edges], each column is a tuple contains a pair `(sender, receiver)`. Here `sender` and `receiver`
-            batch: the indicator vector indicating different graphs    
+            edge_index: a Tensor of shape [2, num_edges], each column is a tuple contains a pair `(sender, receiver)`. Here `sender` and `receiver`
+            batch: the indicator vector indicating different graphs
         """
-        # print("x",x.shape)
-        # print("edge_list",edge_list.shape)
-        # print("batch",batch.shape)
-        out = self.conv1(x, edge_list)
-        out = F.relu(out)
-        for hidden in self.middle_layers:
-            out = hidden(out, edge_list)
-            out = F.relu(out)
-        out = self.pool(out, batch)
-        out = self.lin(out)
+#        print(f"{x.shape}, {edge_list.shape}")
+        out = self.layers(x, edge_index, batch)
         return out
-

@@ -23,8 +23,11 @@ import time
 import timeit
 import traceback
 
-from gnn import GNN
+from torch_geometric.utils import coalesce
+from torch.nn.functional import pad
+
 from create_graph_representation import TileGraph
+from nethacknet import NetHackNet
 
 # Necessary for multithreading.
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -60,14 +63,18 @@ parser.add_argument("--disable_checkpoint", action="store_true",
                     help="Disable saving checkpoint.")
 parser.add_argument("--savedir", default="~/torchbeast/",
                     help="Root dir where experiment data will be saved.")
-parser.add_argument("--num_actors", default=4, type=int, metavar="N",
-                    help="Number of actors (default: 4).")
+parser.add_argument("--num_actors", default=1, type=int, metavar="N",
+                    help="Number of actors (default: 1).")
 parser.add_argument("--total_steps", default=100000, type=int, metavar="T",
                     help="Total environment steps to train for.")
 parser.add_argument("--batch_size", default=8, type=int, metavar="B",
                     help="Learner batch size.")
 parser.add_argument("--unroll_length", default=80, type=int, metavar="T",
                     help="The unroll length (time dimension).")
+parser.add_argument("--pyg_nodes_max", default=400, type=int, metavar="T",
+                    help="Maximum number of PYGDATA nodes")
+parser.add_argument("--pyg_edges_max", default=4000, type=int, metavar="T",
+                    help="Maximum number of PYGDATA edges")
 parser.add_argument("--num_buffers", default=None, type=int,
                     metavar="N", help="Number of shared-memory buffers.")
 parser.add_argument("--num_learner_threads", "--num_threads", default=2, type=int,
@@ -158,10 +165,9 @@ def act(
 ):
     try:
         logging.info("Actor %i started.", actor_index)
-        
-        graph = TileGraph()
+
+        graph = TileGraph(max_nodes = flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
         graph.reset()
-        pygData = graph.pyg()
 
         gym_env = create_env(
             flags.env, savedir=flags.rundir, save_ttyrec_every=flags.save_ttyrec_every
@@ -169,6 +175,10 @@ def act(
         env = ResettingEnvironment(gym_env)
         env_output = env.initial()
         agent_state = model.initial_state(batch_size=1)
+        graph.update(env_output)
+        pygData = graph.pyg()
+        env_output['pygData'] = pygData
+
         agent_output, unused_state = model(env_output, agent_state)
         while True:
             index = free_queue.get()
@@ -177,6 +187,8 @@ def act(
 
             # Write old rollout end.
             for key in env_output:
+                if key == 'pygData':
+                    continue
                 buffers[key][index][0, ...] = env_output[key]
             for key in agent_output:
                 buffers[key][index][0, ...] = agent_output[key]
@@ -186,20 +198,36 @@ def act(
             # Do new rollout.
             for t in range(flags.unroll_length):
                 with torch.no_grad():
-                    agent_output, agent_state = model(env_output, agent_state, pygData)
+                    agent_output, agent_state = model(env_output, agent_state)
 
                 env_output = env.step(agent_output["action"])
 
-                if env_output['env_step'] < 2:
+                if env_output['episode_step'] == 1:
                     graph.reset()
-                
+
                 graph.update(env_output)
                 pygData = graph.pyg()
+                env_output['pygData'] = pygData
 
                 for key in env_output:
+                    if key == 'pygData':
+                        continue
                     buffers[key][index][t + 1, ...] = env_output[key]
                 for key in agent_output:
                     buffers[key][index][t + 1, ...] = agent_output[key]
+
+                buffers['pyg_n_nodes'][index][t + 1, ...] = len(pygData.x)
+                buffers['pyg_nodes'][index][t + 1, ...] = pad(
+                    pygData.x, (0, flags.pyg_nodes_max - len(pygData.x)),
+                    value=0)
+                
+                edge_index = coalesce(pygData.edge_index)
+                buffers['pyg_n_edges'][index][t + 1, ...] = edge_index.shape[1]
+                edge_index = pad(
+                    edge_index, (
+                        0, flags.pyg_edges_max - edge_index.shape[1], 0, 0),
+                    value=0)
+                buffers['pyg_edges'][index][t + 1, ...] = edge_index
 
             full_queue.put(index)
 
@@ -231,7 +259,8 @@ def get_batch(
     )
     for m in indices:
         free_queue.put(m)
-    batch = {k: t.to(device=flags.device, non_blocking=True) for k, t in batch.items()}
+    batch = {k: t.to(device=flags.device, non_blocking=True)
+             for k, t in batch.items()}
     initial_agent_state = tuple(
         t.to(device=flags.device, non_blocking=True) for t in initial_agent_state
     )
@@ -257,7 +286,8 @@ def learn(
 
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         batch = {key: tensor[1:] for key, tensor in batch.items()}
-        learner_outputs = {key: tensor[:-1] for key, tensor in learner_outputs.items()}
+        learner_outputs = {key: tensor[:-1]
+                           for key, tensor in learner_outputs.items()}
 
         rewards = batch["reward"]
         if flags.reward_clipping == "abs_one":
@@ -315,7 +345,8 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
     size = (flags.unroll_length + num_overlapping_steps,)
 
     # Get specimens to infer shapes and dtypes.
-    samples = {k: torch.from_numpy(v) for k, v in observation_space.sample().items()}
+    samples = {k: torch.from_numpy(v)
+               for k, v in observation_space.sample().items()}
 
     specs = {
         key: dict(size=size + sample.shape, dtype=sample.dtype)
@@ -330,11 +361,18 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
         baseline=dict(size=size, dtype=torch.float32),
         last_action=dict(size=size, dtype=torch.int64),
         action=dict(size=size, dtype=torch.int64),
+        pyg_n_nodes=dict(size=size, dtype=torch.int32),
+        pyg_n_edges=dict(size=size, dtype=torch.int32),
+        pyg_nodes=dict(size=(flags.unroll_length + num_overlapping_steps,
+                       flags.pyg_nodes_max), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
+        pyg_edges=dict(size=(flags.unroll_length + num_overlapping_steps, 2,
+                       flags.pyg_edges_max), dtype=torch.int32),
     )
     buffers = {key: [] for key in specs}
     for _ in range(flags.num_buffers):
         for key in buffers:
             buffers[key].append(torch.empty(**specs[key]).share_memory_())
+#        buffers['pyg_edges'][-1] = buffers['pyg_edges'][-1]
     return buffers
 
 
@@ -375,7 +413,8 @@ class ResettingEnvironment:
         return result
 
     def step(self, action):
-        observation, reward, done, unused_info = self.gym_env.step(action.item())
+        observation, reward, done, unused_info = self.gym_env.step(
+            action.item())
         self.episode_step += 1
         self.episode_return += reward
         episode_step = self.episode_step
@@ -467,6 +506,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
 
     actor_processes = []
     ctx = mp.get_context("fork")
+#    manager = mp.Manager()
     free_queue = ctx.SimpleQueue()
     full_queue = ctx.SimpleQueue()
 
@@ -611,7 +651,8 @@ def test(flags, num_episodes=10):
 
     gym_env = create_env(flags.env, save_ttyrec_every=flags.save_ttyrec_every)
     env = ResettingEnvironment(gym_env)
-    model = Net(gym_env.observation_space, gym_env.action_space.n, flags.use_lstm)
+    model = Net(gym_env.observation_space,
+                gym_env.action_space.n, flags.use_lstm)
     model.eval()
     checkpoint = torch.load(checkpointpath, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -635,7 +676,8 @@ def test(flags, num_episodes=10):
             )
     env.close()
     logging.info(
-        "Average returns over %i steps: %.1f", num_episodes, sum(returns) / len(returns)
+        "Average returns over %i steps: %.1f", num_episodes, sum(
+            returns) / len(returns)
     )
 
 
@@ -667,340 +709,6 @@ class RandomNet(nn.Module):
 
     def initial_state(self, batch_size):
         return ()
-
-
-def _step_to_range(delta, num_steps):
-    """Range of `num_steps` integers with distance `delta` centered around zero."""
-    return delta * torch.arange(-num_steps // 2, num_steps // 2)
-
-
-class Crop(nn.Module):
-    """Helper class for NetHackNet below."""
-
-    def __init__(self, height, width, height_target, width_target):
-        super(Crop, self).__init__()
-        self.width = width
-        self.height = height
-        self.width_target = width_target
-        self.height_target = height_target
-        width_grid = _step_to_range(2 / (self.width - 1), self.width_target)[
-            None, :
-        ].expand(self.height_target, -1)
-        height_grid = _step_to_range(2 / (self.height - 1), height_target)[
-            :, None
-        ].expand(-1, self.width_target)
-
-        # "clone" necessary, https://github.com/pytorch/pytorch/issues/34880
-        self.register_buffer("width_grid", width_grid.clone())
-        self.register_buffer("height_grid", height_grid.clone())
-
-    def forward(self, inputs, coordinates):
-        """Calculates centered crop around given x,y coordinates.
-        Args:
-           inputs [B x H x W]
-           coordinates [B x 2] x,y coordinates
-        Returns:
-           [B x H' x W'] inputs cropped and centered around x,y coordinates.
-        """
-        assert inputs.shape[1] == self.height
-        assert inputs.shape[2] == self.width
-
-        inputs = inputs[:, None, :, :].float()
-
-        x = coordinates[:, 0]
-        y = coordinates[:, 1]
-
-        x_shift = 2 / (self.width - 1) * (x.float() - self.width // 2)
-        y_shift = 2 / (self.height - 1) * (y.float() - self.height // 2)
-
-        grid = torch.stack(
-            [
-                self.width_grid[None, :, :] + x_shift[:, None, None],
-                self.height_grid[None, :, :] + y_shift[:, None, None],
-            ],
-            dim=3,
-        )
-
-        # TODO: only cast to int if original tensor was int
-        return (
-            torch.round(F.grid_sample(inputs, grid, align_corners=True))
-            .squeeze(1)
-            .long()
-        )
-
-
-class NetHackNet(nn.Module):
-    def __init__(
-        self,
-        observation_shape,
-        num_actions,
-        use_lstm,
-        embedding_dim=32,
-        crop_dim=9,
-        num_layers=5,
-    ):
-        super(NetHackNet, self).__init__()
-
-        self.glyph_shape = observation_shape["glyphs"].shape
-        self.blstats_size = observation_shape["blstats"].shape[0]
-
-        self.num_actions = num_actions
-        self.use_lstm = use_lstm
-
-        self.H = self.glyph_shape[0]
-        self.W = self.glyph_shape[1]
-
-        self.k_dim = embedding_dim # the output dimension of the green blstats MLP and embedding dimension used by the CNNs
-        self.h_dim = 512 # the hidden dimension of the LSTM
-
-        self.crop_dim = crop_dim
-
-        self.crop = Crop(self.H, self.W, self.crop_dim, self.crop_dim)
-
-        self.embed = nn.Embedding(nethack.MAX_GLYPH, self.k_dim)
-
-        K = embedding_dim  # number of input filters
-        F = 3  # filter dimensions
-        S = 1  # stride
-        P = 1  # padding
-        M = 16  # number of intermediate filters
-        Y = 8  # number of output filters
-        L = num_layers  # number of convnet layers
-
-        in_channels = [K] + [M] * (L - 1)
-        out_channels = [M] * (L - 1) + [Y]
-
-        def interleave(xs, ys):
-            return [val for pair in zip(xs, ys) for val in pair]
-
-
-
-        #### Red CNN over full glyph map model
-        conv_extract = [
-            nn.Conv2d(
-                in_channels=in_channels[i],
-                out_channels=out_channels[i],
-                kernel_size=(F, F),
-                stride=S,
-                padding=P,
-            )
-            for i in range(L)
-        ]
-
-        self.extract_representation = nn.Sequential(
-            *interleave(conv_extract, [nn.ELU()] * len(conv_extract))
-        )
-
-
-
-        #### Blue CNN crop model
-        conv_extract_crop = [
-            nn.Conv2d(
-                in_channels=in_channels[i],
-                out_channels=out_channels[i],
-                kernel_size=(F, F),
-                stride=S,
-                padding=P,
-            )
-            for i in range(L)
-        ]
-
-        self.extract_crop_representation = nn.Sequential(
-            *interleave(conv_extract_crop, [nn.ELU()] * len(conv_extract))
-        )
-
-
-
-        #### Green blstats MLP
-        self.embed_blstats = nn.Sequential(
-            nn.Linear(self.blstats_size, self.k_dim),
-            nn.ReLU(),
-            nn.Linear(self.k_dim, self.k_dim),
-            nn.ReLU(),
-        )
-
-
-
-        #### Our GNN
-        gnn_out_dim = 16 # HARDCODED
-        self.gnn = GNN(num_features=nethack.MAX_GLYPH+1,out_dim=gnn_out_dim)
-
-
-
-        #### Orange MLP that takes output from (the blue crop CNN, red full glyph map CNN, green blstats MLP, and our GNN) and feeds it to the LSTM or directly to the policy and baseline
-        out_dim = self.k_dim # blstats MLP
-        out_dim += self.H * self.W * Y # CNN over full glyph map
-        out_dim += self.crop_dim**2 * Y # CNN crop model
-        out_dim += gnn_out_dim # our GNN
-
-        self.fc = nn.Sequential(
-            nn.Linear(out_dim, self.h_dim),
-            nn.ReLU(),
-            nn.Linear(self.h_dim, self.h_dim),
-            nn.ReLU(),
-        )
-
-
-
-        #### LSTM
-        if self.use_lstm:
-            self.core = nn.LSTM(self.h_dim, self.h_dim, num_layers=1)
-
-
-
-        #### Policy and baseline outputs
-        self.policy = nn.Linear(self.h_dim, self.num_actions)
-        self.baseline = nn.Linear(self.h_dim, 1) # Harry: tbh I'm not really sure what the baseline is used for
-
-    def initial_state(self, batch_size=1): # initial state of the LSTM or empty tuple
-        if not self.use_lstm:
-            return tuple()
-        return tuple(
-            torch.zeros(self.core.num_layers, batch_size, self.core.hidden_size)
-            for _ in range(2)
-        )
-
-    def _select(self, embed, x):
-        # Work around slow backward pass of nn.Embedding, see
-        # https://github.com/pytorch/pytorch/issues/24912
-        out = embed.weight.index_select(0, x.reshape(-1))
-        return out.reshape(x.shape + (-1,))
-
-    def forward(self, env_outputs, core_state, pygData):
-        # print("--------- forward -----------")
-        #### Get the 
-        # -- [T x B x H x W]
-        glyphs = env_outputs["glyphs"]
-
-        # -- [T x B x F]
-        blstats = env_outputs["blstats"]
-
-        T, B, *_ = glyphs.shape
-
-        # -- [B' x H x W]
-        glyphs = torch.flatten(glyphs, 0, 1)  # Merge time and batch.
-
-
-
-        #### Green blstats MLP
-        # -- [B' x F]
-        blstats = blstats.view(T * B, -1).float()
-
-        # -- [B x H x W]
-        glyphs = glyphs.long()
-        # -- [B x 2] x,y coordinates
-        coordinates = blstats[:, :2]
-        # TODO ???
-        # coordinates[:, 0].add_(-1)
-
-        # -- [B x F]
-        blstats = blstats.view(T * B, -1).float()
-        # -- [B x K]
-        blstats_emb = self.embed_blstats(blstats)
-
-        assert blstats_emb.shape[0] == T * B
-
-        reps = [blstats_emb]
-
-
-
-        #### Blue crop CNN
-        # -- [B x H' x W']
-        crop = self.crop(glyphs, coordinates)
-
-        # print("crop", crop)
-        # print("at_xy", glyphs[:, coordinates[:, 1].long(), coordinates[:, 0].long()])
-
-        # -- [B x H' x W' x K]
-        crop_emb = self._select(self.embed, crop)
-
-        # CNN crop model.
-        # -- [B x K x W' x H']
-        crop_emb = crop_emb.transpose(1, 3)  # -- TODO: slow?
-        # -- [B x W' x H' x K]
-        crop_rep = self.extract_crop_representation(crop_emb)
-
-        # -- [B x K']
-        crop_rep = crop_rep.view(T * B, -1)
-        assert crop_rep.shape[0] == T * B
-
-        reps.append(crop_rep)
-
-
-
-        #### Red CNN over all glyphs
-        # -- [B x H x W x K]
-        glyphs_emb = self._select(self.embed, glyphs)
-        # glyphs_emb = self.embed(glyphs)
-        # -- [B x K x W x H]
-        glyphs_emb = glyphs_emb.transpose(1, 3)  # -- TODO: slow?
-        # -- [B x W x H x K]
-        glyphs_rep = self.extract_representation(glyphs_emb)
-
-        # -- [B x K']
-        glyphs_rep = glyphs_rep.view(T * B, -1)
-
-        assert glyphs_rep.shape[0] == T * B
-
-        # -- [B x K'']
-        reps.append(glyphs_rep)
-
-
-
-        #### Our GNN
-        gnn_out = self.gnn(x=pygData.x, edge_list=pygData.edge_index, batch=pygData.batch)
-        
-        # -- [B x gnn_out_dim]
-        reps.append(gnn_out)
-        
-        # print("shapes",[x.shape for x in reps])
-
-
-        #### Orange MLP
-        st = torch.cat(reps, dim=1)
-
-        # -- [B x K]
-        st = self.fc(st)
-
-
-
-        #### LSTM
-        if self.use_lstm:
-            core_input = st.view(T, B, -1)
-            core_output_list = []
-            notdone = (~env_outputs["done"]).float()
-            for input, nd in zip(core_input.unbind(), notdone.unbind()):
-                # Reset core state to zero whenever an episode ended.
-                # Make `done` broadcastable with (num_layers, B, hidden_size)
-                # states:
-                nd = nd.view(1, -1, 1)
-                core_state = tuple(nd * s for s in core_state)
-                output, core_state = self.core(input.unsqueeze(0), core_state)
-                core_output_list.append(output)
-            core_output = torch.flatten(torch.cat(core_output_list), 0, 1)
-        else:
-            core_output = st
-
-        # -- [B x A]
-        policy_logits = self.policy(core_output)
-        # -- [B x A]
-        baseline = self.baseline(core_output)
-
-        if self.training:
-            action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
-        else:
-            # Don't sample when testing.
-            action = torch.argmax(policy_logits, dim=1)
-
-        policy_logits = policy_logits.view(T, B, self.num_actions)
-        baseline = baseline.view(T, B)
-        action = action.view(T, B)
-
-        return (
-            dict(policy_logits=policy_logits, baseline=baseline, action=action),
-            core_state,
-        )
-
 
 Net = NetHackNet
 
