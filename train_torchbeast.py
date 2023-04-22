@@ -71,7 +71,7 @@ parser.add_argument("--batch_size", default=8, type=int, metavar="B",
                     help="Learner batch size.")
 parser.add_argument("--unroll_length", default=80, type=int, metavar="T",
                     help="The unroll length (time dimension).")
-parser.add_argument("--pyg_nodes_max", default=400, type=int, metavar="T",
+parser.add_argument("--pyg_nodes_max", default=600, type=int, metavar="T",
                     help="Maximum number of PYGDATA nodes")
 parser.add_argument("--pyg_edges_max", default=4000, type=int, metavar="T",
                     help="Maximum number of PYGDATA edges")
@@ -606,7 +606,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         while step < flags.total_steps:
             start_step = step
             start_time = timer()
-            time.sleep(5)
+            time.sleep(60)
 
             if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
                 checkpoint()
@@ -658,6 +658,8 @@ def test(flags, num_episodes=10):
     model.load_state_dict(checkpoint["model_state_dict"])
 
     observation = env.initial()
+    graph = TileGraph(
+                max_nodes = flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
     returns = []
 
     agent_state = model.initial_state(batch_size=1)
@@ -665,9 +667,15 @@ def test(flags, num_episodes=10):
     while len(returns) < num_episodes:
         if flags.mode == "test_render":
             env.gym_env.render()
+
+        graph.update(observation)
+        pygData = graph.pyg()
+        observation['pygData'] = pygData
+
         policy_outputs, agent_state = model(observation, agent_state)
         observation = env.step(policy_outputs["action"])
         if observation["done"].item():
+            graph.reset()
             returns.append(observation["episode_return"].item())
             logging.info(
                 "Episode ended after %d steps. Return: %.1f",
