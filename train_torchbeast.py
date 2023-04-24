@@ -22,6 +22,7 @@ import threading
 import time
 import timeit
 import traceback
+import tqdm.auto as tqdm
 
 from torch_geometric.utils import coalesce
 from torch.nn.functional import pad
@@ -65,13 +66,13 @@ parser.add_argument("--savedir", default="~/torchbeast/",
                     help="Root dir where experiment data will be saved.")
 parser.add_argument("--num_actors", default=1, type=int, metavar="N",
                     help="Number of actors (default: 1).")
-parser.add_argument("--total_steps", default=100000, type=int, metavar="T",
+parser.add_argument("--total_steps", default=20000000, type=int, metavar="T",
                     help="Total environment steps to train for.")
 parser.add_argument("--batch_size", default=8, type=int, metavar="B",
                     help="Learner batch size.")
 parser.add_argument("--unroll_length", default=80, type=int, metavar="T",
                     help="The unroll length (time dimension).")
-parser.add_argument("--pyg_nodes_max", default=600, type=int, metavar="T",
+parser.add_argument("--pyg_nodes_max", default=800, type=int, metavar="T",
                     help="Maximum number of PYGDATA nodes")
 parser.add_argument("--pyg_edges_max", default=4000, type=int, metavar="T",
                     help="Maximum number of PYGDATA edges")
@@ -166,7 +167,8 @@ def act(
     try:
         logging.info("Actor %i started.", actor_index)
 
-        graph = TileGraph(max_nodes = flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
+        graph = TileGraph(max_nodes=flags.pyg_nodes_max,
+                          max_edges=flags.pyg_edges_max)
         graph.reset()
 
         gym_env = create_env(
@@ -220,7 +222,7 @@ def act(
                 buffers['pyg_nodes'][index][t + 1, ...] = pad(
                     pygData.x, (0, flags.pyg_nodes_max - len(pygData.x)),
                     value=0)
-                
+
                 edge_index = coalesce(pygData.edge_index)
                 buffers['pyg_n_edges'][index][t + 1, ...] = edge_index.shape[1]
                 edge_index = pad(
@@ -601,35 +603,40 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         )
 
     timer = timeit.default_timer
+    pbar = tqdm.bar(leave=True)
     try:
         last_checkpoint_time = timer()
         while step < flags.total_steps:
             start_step = step
             start_time = timer()
-            time.sleep(60)
+            time.sleep(5)
 
             if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
                 checkpoint()
                 last_checkpoint_time = timer()
 
             sps = (step - start_step) / (timer() - start_time)
-            if stats.get("episode_returns", None):
-                mean_return = (
-                    "Return per episode: %.1f. " % stats["mean_episode_return"]
-                )
-            else:
-                mean_return = ""
-            total_loss = stats.get("total_loss", float("inf"))
-            logging.info(
-                "Steps %i @ %.1f SPS. Loss %f. %sStats:\n%s",
-                step,
-                sps,
-                total_loss,
-                mean_return,
-                pprint.pformat(stats),
-            )
+            # if stats.get("episode_returns", None):
+            #    mean_return = (
+            #        "Return per episode: %.1f. " % stats["mean_episode_return"]
+            #    )
+            # else:
+            #    mean_return = ""
+            # total_loss = stats.get("total_loss", float("inf"))
+            pbar.set_description(f"Steps {step:.2e} @ {sps:.1f} SPS: "
+                                 f"mean_episode_return "
+                                 f"{stats['mean_episode_return']:.2f}")
+            # logging.info(
+            #    "Steps %i @ %.1f SPS. Loss %f. %sStats:\n%s",
+            #    step,
+            #    sps,
+            #    total_loss,
+            #    mean_return,
+            #    pprint.pformat(stats),
+            # )
     except KeyboardInterrupt:
         logging.warning("Quitting.")
+        pbar.close()
         return  # Try joining actors then quit.
     else:
         for thread in threads:
@@ -659,7 +666,7 @@ def test(flags, num_episodes=10):
 
     observation = env.initial()
     graph = TileGraph(
-                max_nodes = flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
+        max_nodes=flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
     returns = []
 
     agent_state = model.initial_state(batch_size=1)
@@ -717,6 +724,7 @@ class RandomNet(nn.Module):
 
     def initial_state(self, batch_size):
         return ()
+
 
 Net = NetHackNet
 

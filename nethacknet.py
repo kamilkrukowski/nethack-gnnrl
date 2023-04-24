@@ -1,3 +1,16 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -10,6 +23,7 @@ from gnn import GNN
 def _step_to_range(delta, num_steps):
     """Range of `num_steps` integers with distance `delta` centered around zero."""
     return delta * torch.arange(-num_steps // 2, num_steps // 2)
+
 
 class Crop(nn.Module):
     """Helper class for NetHackNet below."""
@@ -96,7 +110,7 @@ def pygData_from_buffer(env_outputs):
                 _nodes.append(nodes[i, j, :n_nodes[i, j]])
         pygDatas = [Data(
             x=x, edge_index=edge_index) for (x, edge_index) in zip(
-                                                             _nodes, _edges)]
+            _nodes, _edges)]
         out = Batch.from_data_list(pygDatas)
         return out
     else:

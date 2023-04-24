@@ -1,5 +1,9 @@
+"""
+
+
+"""
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa
 import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool, Sequential
 from torch.nn import Linear, ReLU, Dropout, Embedding
@@ -46,6 +50,5 @@ class GNN(torch.nn.Module):
             edge_index: a Tensor of shape [2, num_edges], each column is a tuple contains a pair `(sender, receiver)`. Here `sender` and `receiver`
             batch: the indicator vector indicating different graphs
         """
-#        print(f"{x.shape}, {edge_list.shape}")
         out = self.layers(x, edge_index, batch)
         return out
