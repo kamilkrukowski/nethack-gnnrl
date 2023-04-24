@@ -22,10 +22,11 @@ import threading
 import time
 import timeit
 import traceback
-import tqdm.auto as tqdm
+from tqdm.auto import tqdm
 
 from torch_geometric.utils import coalesce
 from torch.nn.functional import pad
+from numpy import nan
 
 from create_graph_representation import TileGraph
 from nethacknet import NetHackNet
@@ -603,7 +604,8 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         )
 
     timer = timeit.default_timer
-    pbar = tqdm.bar(leave=True)
+    pbar = tqdm(leave=True)
+    mer = 0
     try:
         last_checkpoint_time = timer()
         while step < flags.total_steps:
@@ -623,9 +625,10 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             # else:
             #    mean_return = ""
             # total_loss = stats.get("total_loss", float("inf"))
-            pbar.set_description(f"Steps {step:.2e} @ {sps:.1f} SPS: "
-                                 f"mean_episode_return "
-                                 f"{stats['mean_episode_return']:.2f}")
+            if stats.get("episode_returns", None):
+                mer = stats.get('mean_episode_return', mer)
+            extra = f"latest_episode_return {mer:.2f}: "
+            pbar.set_description(f"Steps {step:.2e} @ {sps:.1f} SPS: " + extra)
             # logging.info(
             #    "Steps %i @ %.1f SPS. Loss %f. %sStats:\n%s",
             #    step,
@@ -648,6 +651,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         for actor in actor_processes:
             actor.join(timeout=1)
 
+    pbar.close()
     checkpoint()
     logfile.close()
 
