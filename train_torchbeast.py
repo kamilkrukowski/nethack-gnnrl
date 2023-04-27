@@ -22,11 +22,13 @@ import threading
 import time
 import timeit
 import traceback
+from tqdm.auto import tqdm
 
 from torch_geometric.utils import coalesce
 from torch.nn.functional import pad
+from numpy import nan
 
-from create_graph_representation import TileGraph
+from create_graph_representation import TileGraphPosEnc as TileGraph
 from nethacknet import NetHackNet
 
 # Necessary for multithreading.
@@ -65,14 +67,16 @@ parser.add_argument("--savedir", default="~/torchbeast/",
                     help="Root dir where experiment data will be saved.")
 parser.add_argument("--num_actors", default=1, type=int, metavar="N",
                     help="Number of actors (default: 1).")
-parser.add_argument("--total_steps", default=100000, type=int, metavar="T",
+parser.add_argument("--total_steps", default=20000000, type=int, metavar="T",
                     help="Total environment steps to train for.")
 parser.add_argument("--batch_size", default=8, type=int, metavar="B",
                     help="Learner batch size.")
 parser.add_argument("--unroll_length", default=80, type=int, metavar="T",
                     help="The unroll length (time dimension).")
-parser.add_argument("--pyg_nodes_max", default=400, type=int, metavar="T",
+parser.add_argument("--pyg_nodes_max", default=800, type=int, metavar="T",
                     help="Maximum number of PYGDATA nodes")
+parser.add_argument("--pyg_node_fdim", default=4, type=int, metavar="T",
+                    help="PYGDATA Node feature dimension")
 parser.add_argument("--pyg_edges_max", default=4000, type=int, metavar="T",
                     help="Maximum number of PYGDATA edges")
 parser.add_argument("--num_buffers", default=None, type=int,
@@ -83,6 +87,10 @@ parser.add_argument("--disable_cuda", action="store_true",
                     help="Disable CUDA.")
 parser.add_argument("--use_lstm", action="store_true",
                     help="Use LSTM in agent model.")
+parser.add_argument("--resume", action="store_true",
+                    help="Resume training")
+parser.add_argument("--resume_path", default="latest",
+                    help="Directory to resume training from")
 parser.add_argument("--save_ttyrec_every", default=1000, type=int,
                     metavar="N", help="Save ttyrec every N episodes.")
 
@@ -166,7 +174,8 @@ def act(
     try:
         logging.info("Actor %i started.", actor_index)
 
-        graph = TileGraph(max_nodes = flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
+        graph = TileGraph(max_nodes=flags.pyg_nodes_max,
+                          max_edges=flags.pyg_edges_max)
         graph.reset()
 
         gym_env = create_env(
@@ -217,10 +226,10 @@ def act(
                     buffers[key][index][t + 1, ...] = agent_output[key]
 
                 buffers['pyg_n_nodes'][index][t + 1, ...] = len(pygData.x)
-                buffers['pyg_nodes'][index][t + 1, ...] = pad(
-                    pygData.x, (0, flags.pyg_nodes_max - len(pygData.x)),
+                buffers['pyg_nodes'][index][t + 1, :, :] = pad(
+                    pygData.x, (0, 0, 0, flags.pyg_nodes_max - len(pygData.x)),
                     value=0)
-                
+
                 edge_index = coalesce(pygData.edge_index)
                 buffers['pyg_n_edges'][index][t + 1, ...] = edge_index.shape[1]
                 edge_index = pad(
@@ -364,7 +373,7 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
         pyg_n_nodes=dict(size=size, dtype=torch.int32),
         pyg_n_edges=dict(size=size, dtype=torch.int32),
         pyg_nodes=dict(size=(flags.unroll_length + num_overlapping_steps,
-                       flags.pyg_nodes_max), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
+                       flags.pyg_nodes_max, flags.pyg_node_fdim), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
         pyg_edges=dict(size=(flags.unroll_length + num_overlapping_steps, 2,
                        flags.pyg_edges_max), dtype=torch.int32),
     )
@@ -448,6 +457,10 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
     rundir = os.path.join(
         flags.savedir, "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
     )
+    if flags.resume:
+        rundir = os.path.join(
+            flags.savedir, flags.resume_path
+        )
 
     if not os.path.exists(rundir):
         os.makedirs(rundir)
@@ -462,6 +475,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         logging.info("Symlinked log directory: %s", symlink)
     except OSError:
         raise
+    
+    step, stats = 0, {}
+
+    if flags.resume:
+        step = open(os.path.join(rundir, "logs.tsv"), "r", buffering=1).read()
+        step = int(step.split('\n')[-1].split('\t')[0])
+        print(f"RESUMING ON STEP {step}")
 
     logfile = open(os.path.join(rundir, "logs.tsv"), "a", buffering=1)
     checkpointpath = os.path.join(rundir, "model.tar")
@@ -492,6 +512,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
     del env  # End this before forking.
 
     model = Net(observation_space, action_space.n, flags.use_lstm)
+    
+    if flags.resume:
+        print(f"RESUMING FROM {flags.resume_path}")
+        checkpointpath = os.path.join(flags.savedir, flags.resume_path, "model.tar")
+        checkpoint = torch.load(checkpointpath, map_location="cpu")
+        model.load_state_dict(checkpoint["model_state_dict"])
+    
     buffers = create_buffers(flags, observation_space, model.num_actions)
 
     model.share_memory()
@@ -552,9 +579,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         "baseline_loss",
         "entropy_loss",
     ]
-    logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
 
-    step, stats = 0, {}
+
+    
+    if not flags.resume:
+        logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
+    else:
+        logfile.write('\n')
 
     def batch_and_learn(i, lock=threading.Lock()):
         """Thread target for the learning process."""
@@ -601,6 +632,8 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         )
 
     timer = timeit.default_timer
+    pbar = tqdm(leave=True)
+    mer = 0
     try:
         last_checkpoint_time = timer()
         while step < flags.total_steps:
@@ -613,23 +646,28 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
                 last_checkpoint_time = timer()
 
             sps = (step - start_step) / (timer() - start_time)
+            # if stats.get("episode_returns", None):
+            #    mean_return = (
+            #        "Return per episode: %.1f. " % stats["mean_episode_return"]
+            #    )
+            # else:
+            #    mean_return = ""
+            # total_loss = stats.get("total_loss", float("inf"))
             if stats.get("episode_returns", None):
-                mean_return = (
-                    "Return per episode: %.1f. " % stats["mean_episode_return"]
-                )
-            else:
-                mean_return = ""
-            total_loss = stats.get("total_loss", float("inf"))
-            logging.info(
-                "Steps %i @ %.1f SPS. Loss %f. %sStats:\n%s",
-                step,
-                sps,
-                total_loss,
-                mean_return,
-                pprint.pformat(stats),
-            )
+                mer = stats.get('mean_episode_return', mer)
+            extra = f"latest_episode_return {mer:.2f}: "
+            pbar.set_description(f"Steps {step:.2e} @ {sps:.1f} SPS: " + extra)
+            # logging.info(
+            #    "Steps %i @ %.1f SPS. Loss %f. %sStats:\n%s",
+            #    step,
+            #    sps,
+            #    total_loss,
+            #    mean_return,
+            #    pprint.pformat(stats),
+            # )
     except KeyboardInterrupt:
         logging.warning("Quitting.")
+        pbar.close()
         return  # Try joining actors then quit.
     else:
         for thread in threads:
@@ -641,6 +679,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         for actor in actor_processes:
             actor.join(timeout=1)
 
+    pbar.close()
     checkpoint()
     logfile.close()
 
@@ -658,6 +697,8 @@ def test(flags, num_episodes=10):
     model.load_state_dict(checkpoint["model_state_dict"])
 
     observation = env.initial()
+    graph = TileGraph(
+        max_nodes=flags.pyg_nodes_max, max_edges=flags.pyg_edges_max)
     returns = []
 
     agent_state = model.initial_state(batch_size=1)
@@ -665,9 +706,15 @@ def test(flags, num_episodes=10):
     while len(returns) < num_episodes:
         if flags.mode == "test_render":
             env.gym_env.render()
+
+        graph.update(observation)
+        pygData = graph.pyg()
+        observation['pygData'] = pygData
+
         policy_outputs, agent_state = model(observation, agent_state)
         observation = env.step(policy_outputs["action"])
         if observation["done"].item():
+            graph.reset()
             returns.append(observation["episode_return"].item())
             logging.info(
                 "Episode ended after %d steps. Return: %.1f",
@@ -709,6 +756,7 @@ class RandomNet(nn.Module):
 
     def initial_state(self, batch_size):
         return ()
+
 
 Net = NetHackNet
 
