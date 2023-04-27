@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
 from nle import nethack  # noqa: E402
 
-from gnn import GNN
+from gnn import GNNwPOSENC as GNN
 
 
 def _step_to_range(delta, num_steps):

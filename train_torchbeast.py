@@ -28,7 +28,7 @@ from torch_geometric.utils import coalesce
 from torch.nn.functional import pad
 from numpy import nan
 
-from create_graph_representation import TileGraph
+from create_graph_representation import TileGraphPosEnc as TileGraph
 from nethacknet import NetHackNet
 
 # Necessary for multithreading.
@@ -75,6 +75,8 @@ parser.add_argument("--unroll_length", default=80, type=int, metavar="T",
                     help="The unroll length (time dimension).")
 parser.add_argument("--pyg_nodes_max", default=800, type=int, metavar="T",
                     help="Maximum number of PYGDATA nodes")
+parser.add_argument("--pyg_node_fdim", default=4, type=int, metavar="T",
+                    help="PYGDATA Node feature dimension")
 parser.add_argument("--pyg_edges_max", default=4000, type=int, metavar="T",
                     help="Maximum number of PYGDATA edges")
 parser.add_argument("--num_buffers", default=None, type=int,
@@ -85,6 +87,10 @@ parser.add_argument("--disable_cuda", action="store_true",
                     help="Disable CUDA.")
 parser.add_argument("--use_lstm", action="store_true",
                     help="Use LSTM in agent model.")
+parser.add_argument("--resume", action="store_true",
+                    help="Resume training")
+parser.add_argument("--resume_path", default="latest",
+                    help="Directory to resume training from")
 parser.add_argument("--save_ttyrec_every", default=1000, type=int,
                     metavar="N", help="Save ttyrec every N episodes.")
 
@@ -220,8 +226,8 @@ def act(
                     buffers[key][index][t + 1, ...] = agent_output[key]
 
                 buffers['pyg_n_nodes'][index][t + 1, ...] = len(pygData.x)
-                buffers['pyg_nodes'][index][t + 1, ...] = pad(
-                    pygData.x, (0, flags.pyg_nodes_max - len(pygData.x)),
+                buffers['pyg_nodes'][index][t + 1, :, :] = pad(
+                    pygData.x, (0, 0, 0, flags.pyg_nodes_max - len(pygData.x)),
                     value=0)
 
                 edge_index = coalesce(pygData.edge_index)
@@ -367,7 +373,7 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
         pyg_n_nodes=dict(size=size, dtype=torch.int32),
         pyg_n_edges=dict(size=size, dtype=torch.int32),
         pyg_nodes=dict(size=(flags.unroll_length + num_overlapping_steps,
-                       flags.pyg_nodes_max), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
+                       flags.pyg_nodes_max, flags.pyg_node_fdim), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
         pyg_edges=dict(size=(flags.unroll_length + num_overlapping_steps, 2,
                        flags.pyg_edges_max), dtype=torch.int32),
     )
@@ -451,6 +457,10 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
     rundir = os.path.join(
         flags.savedir, "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
     )
+    if flags.resume:
+        rundir = os.path.join(
+            flags.savedir, flags.resume_path
+        )
 
     if not os.path.exists(rundir):
         os.makedirs(rundir)
@@ -465,6 +475,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         logging.info("Symlinked log directory: %s", symlink)
     except OSError:
         raise
+    
+    step, stats = 0, {}
+
+    if flags.resume:
+        step = open(os.path.join(rundir, "logs.tsv"), "r", buffering=1).read()
+        step = int(step.split('\n')[-1].split('\t')[0])
+        print(f"RESUMING ON STEP {step}")
 
     logfile = open(os.path.join(rundir, "logs.tsv"), "a", buffering=1)
     checkpointpath = os.path.join(rundir, "model.tar")
@@ -495,6 +512,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
     del env  # End this before forking.
 
     model = Net(observation_space, action_space.n, flags.use_lstm)
+    
+    if flags.resume:
+        print(f"RESUMING FROM {flags.resume_path}")
+        checkpointpath = os.path.join(flags.savedir, flags.resume_path, "model.tar")
+        checkpoint = torch.load(checkpointpath, map_location="cpu")
+        model.load_state_dict(checkpoint["model_state_dict"])
+    
     buffers = create_buffers(flags, observation_space, model.num_actions)
 
     model.share_memory()
@@ -555,9 +579,13 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         "baseline_loss",
         "entropy_loss",
     ]
-    logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
 
-    step, stats = 0, {}
+
+    
+    if not flags.resume:
+        logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
+    else:
+        logfile.write('\n')
 
     def batch_and_learn(i, lock=threading.Lock()):
         """Thread target for the learning process."""
