@@ -40,11 +40,11 @@ def custom_plot(res, K=3, K2=3, label='Median Return'):
     stderr_lower = stderr_lower[start:-end]
 
     plt.plot(xs, smooth, label=label)
-    plt.fill_between(xs, stderr_lower, stderr_upper, alpha=0.2, label='+/- 1 STD')
+    plt.fill_between(xs, stderr_lower, stderr_upper, alpha=0.2)
 
     plt.title('Episode Returns')
     #plt.legend(loc='best').set_draggable(True)
-    plt.legend(loc='lower right').set_draggable(True)
+    plt.legend(loc='best').set_draggable(True)
 
     plt.xlabel('Simulation Steps')
     plt.ylabel("Score")
@@ -56,27 +56,41 @@ options = os.listdir(save_dir)
 
 # choice = save_dir + 'torchbeast-20230422-164556/'
 choice = save_dir + 'latest/'
+todo = []
 df1 = get_results(save_dir + 'baselinegnn')
-df2 = get_results(choice)
+df2 = get_results(save_dir + 'posenc')
+df3 = get_results(choice)
+df4 = get_results(save_dir + 'base')
 
-res1 = df1[['# Step', 'mean_episode_return', 'total_loss', 'pg_loss',
-          'baseline_loss']].dropna()
+paths = [save_dir + 'baselinegnn', save_dir + 'posenc', save_dir + 'base', save_dir + 'latest/']
+labels = ['BaseGNN', 'GAT + POSENC', 'BaseCNN', 'Graph-RNN']
+res = []
+for path in paths:
+    df = get_results(path)
+    res.append(df[['# Step', 'mean_episode_return', 'total_loss', 'pg_loss',
+                    'baseline_loss']].dropna())
 
-res2 = df2[['# Step', 'mean_episode_return', 'total_loss', 'pg_loss',
-          'baseline_loss']].dropna()
+clip = False
+if clip:
+    minL = min([max(i['# Step'] for i in res)])
+    for i, label in zip(range(len(res)), labels):
+        res[i] = res[i][res[i]['# Step'] < minL]
 
-minL = min(max(res1['# Step']), max(res2['# Step']))
-#res1 = res1[res1['# Step'] < minL]
-#res2 = res2[res2['# Step'] < minL]
+K  = 500
+K2 = 1000
+P = 0.3
+K = min(max(min([int(len(i)*P) for i in res]), 2), K)
+K2 = K
 
-K  = 100
-K2 = 100
-#K = min(min(int(len(res1)*0.05),int(len(res2)*0.05)), 2)
-#K2 = K
-custom_plot(res1, K=K, K2=K2, label='Baseline GNN')
-custom_plot(res2, K=K, K2=K2, label='Positional Encoding')
-xmin = max(res1['# Step'].iloc[K2+K], res2['# Step'].iloc[K2+K])
-xmax = min(res1['# Step'].iloc[-K2-K], res2['# Step'].iloc[-K2-K])
-#plt.xlim((xmin, xmax))
+for i, label in zip(range(len(res)), labels):
+    custom_plot(res[i], K=K, K2=K2, label=label)
+
+res1 = res[0]
+res2 = res[1]
+res3 = res[2]
+xmin = max([i['# Step'].iloc[K2+K] for i in res])
+xmax = min([i['# Step'].iloc[K2+K] for i in res])
+xmax = 1.4e+7
+plt.xlim((xmin, xmax))
 plt.tight_layout()
 plt.savefig('./latest_returns.png')

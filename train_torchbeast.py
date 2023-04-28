@@ -96,7 +96,7 @@ parser.add_argument("--save_ttyrec_every", default=1000, type=int,
 
 
 # Loss settings.
-parser.add_argument("--entropy_cost", default=0.0006,
+parser.add_argument("--entropy_cost", default=0.009,
                     type=float, help="Entropy cost/multiplier.")
 parser.add_argument("--baseline_cost", default=0.5,
                     type=float, help="Baseline cost/multiplier.")
@@ -375,7 +375,7 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
         pyg_nodes=dict(size=(flags.unroll_length + num_overlapping_steps,
                        flags.pyg_nodes_max, flags.pyg_node_fdim), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
         pyg_edges=dict(size=(flags.unroll_length + num_overlapping_steps, 2,
-                       flags.pyg_edges_max), dtype=torch.int32),
+                       flags.pyg_edges_max), dtype=torch.int64),
     )
     buffers = {key: [] for key in specs}
     for _ in range(flags.num_buffers):
