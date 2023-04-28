@@ -480,7 +480,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
 
     if flags.resume:
         step = open(os.path.join(rundir, "logs.tsv"), "r", buffering=1).read()
-        step = int(step.split('\n')[-1].split('\t')[0])
+        step = int(step.strip().split('\n')[-1].split('\t')[0])
         print(f"RESUMING ON STEP {step}")
 
     logfile = open(os.path.join(rundir, "logs.tsv"), "a", buffering=1)
