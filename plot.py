@@ -1,3 +1,4 @@
+# Kamil Krukowski and Harry Li 2023
 import os
 
 import pandas as pd
@@ -62,8 +63,15 @@ df2 = get_results(save_dir + 'posenc')
 df3 = get_results(choice)
 df4 = get_results(save_dir + 'base')
 
-paths = [save_dir + 'baselinegnn', save_dir + 'posenc', save_dir + 'base', save_dir + 'latest/']
-labels = ['BaseGNN', 'GAT + POSENC', 'BaseCNN', 'Graph-RNN']
+paths = [save_dir + 'baselinegnn', save_dir + 'posenc', save_dir + 'base', save_dir + 'g-rnn-entropy']
+labels = ['BaseGNN', 'GAT + POSENC', 'Baseline', 'Graph-RNN']
+
+paths = [paths[2], paths[-1], paths[1], paths[0]]
+labels = [labels[2], labels[-1], labels[1], labels[0]]
+
+#paths = [paths[2], paths[-1]]
+#labels = [labels[2], labels[-1]]
+
 res = []
 for path in paths:
     df = get_results(path)
@@ -77,7 +85,7 @@ if clip:
         res[i] = res[i][res[i]['# Step'] < minL]
 
 K  = 500
-K2 = 1000
+K2 = 100
 P = 0.3
 K = min(max(min([int(len(i)*P) for i in res]), 2), K)
 K2 = K
@@ -87,7 +95,7 @@ for i, label in zip(range(len(res)), labels):
 
 res1 = res[0]
 res2 = res[1]
-res3 = res[2]
+res3 = res[-1]
 xmin = max([i['# Step'].iloc[K2+K] for i in res])
 xmax = min([i['# Step'].iloc[K2+K] for i in res])
 xmax = 1.4e+7

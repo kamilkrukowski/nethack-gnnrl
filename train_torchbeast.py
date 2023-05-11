@@ -159,7 +159,10 @@ def compute_policy_gradient_loss(logits, actions, advantages):
 
 
 def create_env(name, *args, **kwargs):
-    return gym.make(name, observation_keys=("glyphs", "blstats"), *args, **kwargs)
+    observation_keys = ("glyphs", "blstats")
+    if 'observation_keys' in kwargs:
+        observation_keys = kwargs.pop('observation_keys')
+    return gym.make(name, observation_keys=observation_keys, *args, **kwargs)
 
 
 def act(
@@ -579,9 +582,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         "baseline_loss",
         "entropy_loss",
     ]
-
-
-    
+ 
     if not flags.resume:
         logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
     else:

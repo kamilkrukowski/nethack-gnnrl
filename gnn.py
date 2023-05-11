@@ -1,6 +1,5 @@
 """
-
-
+Harry Li and Kamil Krukowski 2023
 """
 import torch
 import torch.nn.functional as F  # noqa
@@ -101,10 +100,17 @@ class GNNwPOSENC(torch.nn.Module):
         """
         # First feature is LongTensor Embedding lookup IDX
         # 2nd, 3rd are x,y pos, 4th is boolean: agent or not.
-        glyphs = x[:, :1]
-        xpos = x[:, 1:2]
-        ypos = x[:, 2:3]
-        is_agent = x[:, 3:4]
+        glyphs, xpos, ypos, is_agent = (None, None, None, None)
+        if len(x.shape) == 2:
+            glyphs = x[:, :1]
+            xpos = x[:, 1:2]
+            ypos = x[:, 2:3]
+            is_agent = x[:, 3:4]
+        else:
+            glyphs = x[:1]
+            xpos = x[1:2]
+            ypos = x[2:3]
+            is_agent = x[3:4]
 
         glyphs = self.embed(glyphs).squeeze()
         is_agent = self.embed_is_agent(is_agent).squeeze()

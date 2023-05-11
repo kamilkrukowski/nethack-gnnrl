@@ -81,6 +81,9 @@ class Crop(nn.Module):
 
 
 def pygData_from_buffer(env_outputs):
+    """
+    Implemented by Harry Li and Kamil Krukowski 2023
+    """
 
     nodes = env_outputs['pyg_nodes']
     edges = env_outputs['pyg_edges']
@@ -119,6 +122,9 @@ def pygData_from_buffer(env_outputs):
 
 
 class NetHackNet(nn.Module):
+    """
+    modified by Harry Li and Kamil Krukowski 2023
+    """
     def __init__(
         self,
         observation_shape,
@@ -333,7 +339,7 @@ class NetHackNet(nn.Module):
             print(gnn_out.shape)
 
         # print("shapes",[x.shape for x in reps])
-        
+
         # LSTM
         if self.use_lstm:
             core_input = gnn_out.view(T, B, -1)

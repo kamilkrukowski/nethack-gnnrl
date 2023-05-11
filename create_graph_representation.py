@@ -1,3 +1,6 @@
+"""
+Harry Li and Kamil Krukowski 2023
+"""
 from abc import ABC, abstractmethod, abstractproperty
 import re
 
