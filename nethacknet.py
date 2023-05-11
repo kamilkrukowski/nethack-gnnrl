@@ -81,6 +81,9 @@ class Crop(nn.Module):
 
 
 def pygData_from_buffer(env_outputs):
+    """
+    Implemented by Harry Li and Kamil Krukowski 2023
+    """
 
     nodes = env_outputs['pyg_nodes']
     edges = env_outputs['pyg_edges']
@@ -119,6 +122,9 @@ def pygData_from_buffer(env_outputs):
 
 
 class NetHackNet(nn.Module):
+    """
+    modified by Harry Li and Kamil Krukowski 2023
+    """
     def __init__(
         self,
         observation_shape,
@@ -222,7 +228,7 @@ class NetHackNet(nn.Module):
 
         # LSTM
         if self.use_lstm:
-            self.core = nn.LSTM(self.h_dim, self.h_dim, num_layers=1)
+            self.core = nn.LSTM(self.gnn_out_dim, self.gnn_out_dim, num_layers=1)
 
         # Policy and baseline outputs
         self.policy = nn.Linear(self.h_dim, self.num_actions)
@@ -332,24 +338,11 @@ class NetHackNet(nn.Module):
         if len(glyphs_rep.shape) > 2:
             print(gnn_out.shape)
 
-        # -- [B x gnn_out_dim]
-        reps.append(gnn_out)
-
         # print("shapes",[x.shape for x in reps])
-
-        # Orange MLP
-        try:
-            st = torch.cat(reps, dim=1)
-        except:
-            print("shapes", [x.shape for x in reps])
-            st = torch.cat(reps, dim=1)
-
-        # -- [B x K]
-        st = self.fc(st)
 
         # LSTM
         if self.use_lstm:
-            core_input = st.view(T, B, -1)
+            core_input = gnn_out.view(T, B, -1)
             core_output_list = []
             notdone = (~env_outputs["done"]).float()
             for input, nd in zip(core_input.unbind(), notdone.unbind()):
@@ -363,6 +356,20 @@ class NetHackNet(nn.Module):
             core_output = torch.flatten(torch.cat(core_output_list), 0, 1)
         else:
             core_output = st
+
+        # -- [B x gnn_out_dim]
+        reps.append(gnn_out)
+
+        # Orange MLP
+        try:
+            st = torch.cat(reps, dim=1)
+        except:
+            print("shapes", [x.shape for x in reps])
+            st = torch.cat(reps, dim=1)
+
+        # -- [B x K]
+        st = self.fc(st)
+        core_output = st
 
         # -- [B x A]
         policy_logits = self.policy(core_output)

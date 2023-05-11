@@ -1,9 +1,13 @@
+"""
+Harry Li and Kamil Krukowski 2023
+"""
 from abc import ABC, abstractmethod, abstractproperty
 import re
 
 import gym  # type: ignore
 import nle  # type: ignore
 import numpy as np  # type: ignore
+import torch
 from torch_geometric.data import Data  # type: ignore
 from torch import is_tensor, Tensor, LongTensor, from_numpy
 
@@ -54,7 +58,7 @@ class WorldGraph(ABC):
     def pyg(self):
         """Generate Pytorch-Geometric Data Representation of current state."""
         return Data(x=from_numpy(self.nodes).int(),
-                    edge_index=from_numpy(self.edge_index).int().reshape(2, -1)
+                    edge_index=from_numpy(self.edge_index).to(torch.int64).reshape(2, -1)
                     )
 
 

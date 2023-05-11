@@ -96,7 +96,7 @@ parser.add_argument("--save_ttyrec_every", default=1000, type=int,
 
 
 # Loss settings.
-parser.add_argument("--entropy_cost", default=0.0006,
+parser.add_argument("--entropy_cost", default=0.009,
                     type=float, help="Entropy cost/multiplier.")
 parser.add_argument("--baseline_cost", default=0.5,
                     type=float, help="Baseline cost/multiplier.")
@@ -159,7 +159,10 @@ def compute_policy_gradient_loss(logits, actions, advantages):
 
 
 def create_env(name, *args, **kwargs):
-    return gym.make(name, observation_keys=("glyphs", "blstats"), *args, **kwargs)
+    observation_keys = ("glyphs", "blstats")
+    if 'observation_keys' in kwargs:
+        observation_keys = kwargs.pop('observation_keys')
+    return gym.make(name, observation_keys=observation_keys, *args, **kwargs)
 
 
 def act(
@@ -375,7 +378,7 @@ def create_buffers(flags, observation_space, num_actions, num_overlapping_steps=
         pyg_nodes=dict(size=(flags.unroll_length + num_overlapping_steps,
                        flags.pyg_nodes_max, flags.pyg_node_fdim), dtype=torch.int32),  # int32 is necessary for torch.nn.Embedding Layer
         pyg_edges=dict(size=(flags.unroll_length + num_overlapping_steps, 2,
-                       flags.pyg_edges_max), dtype=torch.int32),
+                       flags.pyg_edges_max), dtype=torch.int64),
     )
     buffers = {key: [] for key in specs}
     for _ in range(flags.num_buffers):
@@ -480,7 +483,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
 
     if flags.resume:
         step = open(os.path.join(rundir, "logs.tsv"), "r", buffering=1).read()
-        step = int(step.split('\n')[-1].split('\t')[0])
+        step = int(step.strip().split('\n')[-1].split('\t')[0])
         print(f"RESUMING ON STEP {step}")
 
     logfile = open(os.path.join(rundir, "logs.tsv"), "a", buffering=1)
@@ -579,9 +582,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         "baseline_loss",
         "entropy_loss",
     ]
-
-
-    
+ 
     if not flags.resume:
         logfile.write("# Step\t%s\n" % "\t".join(stat_keys))
     else:
